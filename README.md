@@ -40,6 +40,9 @@ Public APIs:
 | Method | Endpoint | Description |
 | --- | --- | --- |
 | GET | `/api/products` | Get all products with pagination and filters |
+| POST | `/api/products` | Create a new product |
+| PUT/PATCH | `/api/products/{id-or-slug}` | Edit a product by ID or slug |
+| DELETE | `/api/products/{id-or-slug}` | Delete a product by ID or slug |
 | GET | `/api/products/{slug}` | Get a single product by slug |
 | GET | `/api/products/featured` | Get featured products for homepage |
 | GET | `/api/products/search?q=` | Search products by keyword |
@@ -50,9 +53,9 @@ Public APIs:
 Create product:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/products \
+curl -X POST http://localhost:8080/api/products \
   -H "Content-Type: application/json" \
-  -d '{"title":"Canvas Art","slug":"canvas-art","description":"Large cotton canvas","price":19.99,"currency":"USD","category":"Canvas","style":"Abstract","theme":"Modern","orientation":"Landscape","size":"24x36 in","image_url":"https://example.com/canvas.jpg","thumbnail_url":"https://example.com/canvas-thumb.jpg","stock_quantity":10,"is_active":true}'
+  -d '{"title":"Canvas Art","slug":"canvas-art","description":"Large cotton canvas","price":19.99,"currency":"USD","category":"Canvas","style":"Abstract","theme":"Modern","orientation":"Landscape","size":"24x36 in","image_url":"https://example.com/canvas.jpg","thumbnail_url":"https://example.com/canvas-thumb.jpg","original_url":"https://example.com/canvas-original.jpg","stock_quantity":10,"is_active":true}'
 ```
 
 List products:
@@ -65,6 +68,25 @@ Get product:
 
 ```bash
 curl http://localhost:8080/api/products/golden-abstract-canvas
+```
+
+Edit product by ID or slug:
+
+```bash
+curl -X PATCH http://localhost:8080/api/products/1 \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Updated Canvas Art","price":24.99,"stock_quantity":8}'
+
+curl -X PATCH http://localhost:8080/api/products/canvas-art \
+  -H "Content-Type: application/json" \
+  -d '{"is_active":false}'
+```
+
+Delete product by ID or slug:
+
+```bash
+curl -X DELETE http://localhost:8080/api/products/1
+curl -X DELETE http://localhost:8080/api/products/golden-abstract-canvas
 ```
 
 Search products:

@@ -22,6 +22,9 @@ func main() {
 	productRepository := repository.NewProductRepository(db)
 	productService := service.NewProductService(productRepository)
 	productController := controller.NewProductController(productService)
+	carouselRepository := repository.NewCarouselRepository(db)
+	carouselService := service.NewCarouselService(carouselRepository)
+	carouselController := controller.NewCarouselController(carouselService)
 
 	userRepository := repository.NewUserRepository(db)
 	addressRepository := repository.NewAddressRepository(db)
@@ -38,22 +41,38 @@ func main() {
 	addressController := controller.NewAddressController(addressService)
 	cartController := controller.NewCartController(cartService)
 	contactController := controller.NewContactController(contactService)
+	uploadController := controller.NewUploadController(appConfig)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", controller.Health)
 
 	mux.HandleFunc("GET /api/products", productController.GetAll)
+	mux.HandleFunc("POST /api/products", productController.Create)
 	mux.HandleFunc("GET /api/products/featured", productController.GetFeatured)
 	mux.HandleFunc("GET /api/products/search", productController.Search)
 	mux.HandleFunc("GET /api/products/categories", productController.GetCategories)
 	mux.HandleFunc("GET /api/products/styles", productController.GetStyles)
 	mux.HandleFunc("GET /api/products/themes", productController.GetThemes)
 	mux.HandleFunc("GET /api/products/{slug}", productController.GetBySlug)
+	mux.HandleFunc("PUT /api/products/{identifier}", productController.UpdateByIdentifier)
+	mux.HandleFunc("PATCH /api/products/{identifier}", productController.UpdateByIdentifier)
+	mux.HandleFunc("DELETE /api/products/{identifier}", productController.DeleteByIdentifier)
+	mux.HandleFunc("GET /api/carousel", carouselController.GetActive)
+	mux.HandleFunc("GET /api/admin/carousel", carouselController.GetAll)
+	mux.HandleFunc("POST /api/admin/carousel", carouselController.Create)
+	mux.HandleFunc("PUT /api/admin/carousel/{id}", carouselController.Update)
+	mux.HandleFunc("PATCH /api/admin/carousel/{id}/status", carouselController.SetActive)
+	mux.HandleFunc("DELETE /api/admin/carousel/{id}", carouselController.Delete)
+	mux.HandleFunc("PUT /api/carousel", carouselController.ReplaceAll)
 
 	mux.HandleFunc("POST /api/contact", contactController.Create)
+	mux.HandleFunc("POST /api/uploads/carousel/sas", uploadController.CreateCarouselUploadSAS)
 
 	mux.HandleFunc("POST /api/v1/products", productController.Create)
 	mux.HandleFunc("GET /api/v1/products/{id}", productController.GetByID)
+	mux.HandleFunc("PUT /api/v1/products/{id}", productController.UpdateByID)
+	mux.HandleFunc("PATCH /api/v1/products/{id}", productController.UpdateByID)
+	mux.HandleFunc("DELETE /api/v1/products/{id}", productController.DeleteByID)
 
 	mux.HandleFunc("POST /api/auth/register", authController.Register)
 	mux.HandleFunc("POST /api/auth/login", authController.Login)
@@ -75,7 +94,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:    ":" + appConfig.AppPort,
-		Handler: controller.LoggingMiddleware(mux),
+		Handler: controller.LoggingMiddleware(controller.CORSMiddleware(appConfig.CORSAllowedOrigins, mux)),
 	}
 
 	log.Println("server started on port", appConfig.AppPort)

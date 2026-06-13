@@ -6,14 +6,8 @@ services:
     container_name: art-backend-api
     ports:
       - "8080:8080"
-    environment:
-      APP_PORT: 8080
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_USER: postgres
-      DB_PASSWORD: postgres
-      DB_NAME: art_backend
-      DB_SSLMODE: disable
+    env_file:
+      - .env
     depends_on:
       - db
     volumes:
@@ -25,9 +19,9 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: art_backend
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-art_backend}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d

@@ -224,3 +224,123 @@ func (c *ProductController) Create(w http.ResponseWriter, r *http.Request) {
 
 	response.JSON(w, http.StatusCreated, "product created successfully", product)
 }
+
+func (c *ProductController) UpdateByIdentifier(w http.ResponseWriter, r *http.Request) {
+	var request model.UpdateProductRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body", err.Error())
+		return
+	}
+
+	identifier := r.PathValue("identifier")
+	if id, err := strconv.ParseInt(identifier, 10, 64); err == nil {
+		c.updateByID(w, r, id, request)
+		return
+	}
+
+	c.updateBySlug(w, r, identifier, request)
+}
+
+func (c *ProductController) UpdateByID(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid product id", "id must be a positive number")
+		return
+	}
+
+	var request model.UpdateProductRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body", err.Error())
+		return
+	}
+
+	c.updateByID(w, r, id, request)
+}
+
+func (c *ProductController) updateByID(w http.ResponseWriter, r *http.Request, id int64, request model.UpdateProductRequest) {
+	product, err := c.service.UpdateByID(r.Context(), id, request)
+	if errors.Is(err, service.ErrInvalidProduct) {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "validation failed", "at least one valid product field is required")
+		return
+	}
+	if errors.Is(err, service.ErrProductNotFound) {
+		response.Error(w, http.StatusNotFound, "NOT_FOUND", "product not found", "")
+		return
+	}
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "could not update product", err.Error())
+		return
+	}
+
+	response.JSON(w, http.StatusOK, "product updated successfully", product)
+}
+
+func (c *ProductController) updateBySlug(w http.ResponseWriter, r *http.Request, slug string, request model.UpdateProductRequest) {
+	product, err := c.service.UpdateBySlug(r.Context(), slug, request)
+	if errors.Is(err, service.ErrInvalidProduct) {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "validation failed", "at least one valid product field is required")
+		return
+	}
+	if errors.Is(err, service.ErrProductNotFound) {
+		response.Error(w, http.StatusNotFound, "NOT_FOUND", "product not found", "")
+		return
+	}
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "could not update product", err.Error())
+		return
+	}
+
+	response.JSON(w, http.StatusOK, "product updated successfully", product)
+}
+
+func (c *ProductController) DeleteByIdentifier(w http.ResponseWriter, r *http.Request) {
+	identifier := r.PathValue("identifier")
+	if id, err := strconv.ParseInt(identifier, 10, 64); err == nil {
+		c.deleteByID(w, r, id)
+		return
+	}
+
+	c.deleteBySlug(w, r, identifier)
+}
+
+func (c *ProductController) DeleteByID(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid product id", "id must be a positive number")
+		return
+	}
+
+	c.deleteByID(w, r, id)
+}
+
+func (c *ProductController) DeleteBySlug(w http.ResponseWriter, r *http.Request) {
+	c.deleteBySlug(w, r, r.PathValue("slug"))
+}
+
+func (c *ProductController) deleteByID(w http.ResponseWriter, r *http.Request, id int64) {
+	err := c.service.DeleteByID(r.Context(), id)
+	if errors.Is(err, service.ErrProductNotFound) {
+		response.Error(w, http.StatusNotFound, "NOT_FOUND", "product not found", "")
+		return
+	}
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "could not delete product", err.Error())
+		return
+	}
+
+	response.JSON(w, http.StatusOK, "product deleted successfully", nil)
+}
+
+func (c *ProductController) deleteBySlug(w http.ResponseWriter, r *http.Request, slug string) {
+	err := c.service.DeleteBySlug(r.Context(), slug)
+	if errors.Is(err, service.ErrProductNotFound) {
+		response.Error(w, http.StatusNotFound, "NOT_FOUND", "product not found", "")
+		return
+	}
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "could not delete product", err.Error())
+		return
+	}
+
+	response.JSON(w, http.StatusOK, "product deleted successfully", nil)
+}
