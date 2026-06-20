@@ -40,7 +40,7 @@ func (r *CartRepository) FindItems(ctx context.Context, cartID int64) ([]model.C
 			ci.id,
 			ci.cart_id,
 			ci.quantity,
-			(ci.quantity * p.price) AS subtotal,
+			(ci.quantity * pv.price) AS subtotal,
 			ci.created_at,
 			ci.updated_at,
 			p.id,
@@ -56,12 +56,22 @@ func (r *CartRepository) FindItems(ctx context.Context, cartID int64) ([]model.C
 			p.size,
 			p.image_url,
 			p.thumbnail_url,
+			p.original_url,
 			p.stock_quantity,
 			p.is_active,
 			p.created_at,
-			p.updated_at
+			p.updated_at,
+			pv.id,
+			pv.product_id,
+			pv.size,
+			pv.price,
+			pv.stock_quantity,
+			pv.is_default,
+			pv.created_at,
+			pv.updated_at
 		FROM cart_items ci
-		JOIN products p ON p.id = ci.product_id
+		JOIN product_variants pv ON pv.id = ci.product_variant_id
+		JOIN products p ON p.id = pv.product_id
 		WHERE ci.cart_id = $1
 		ORDER BY ci.id DESC
 	`, cartID)
@@ -93,10 +103,19 @@ func (r *CartRepository) FindItems(ctx context.Context, cartID int64) ([]model.C
 			&item.Product.Size,
 			&item.Product.ImageURL,
 			&item.Product.ThumbnailURL,
+			&item.Product.OriginalURL,
 			&item.Product.StockQuantity,
 			&item.Product.IsActive,
 			&item.Product.CreatedAt,
 			&item.Product.UpdatedAt,
+			&item.Variant.ID,
+			&item.Variant.ProductID,
+			&item.Variant.Size,
+			&item.Variant.Price,
+			&item.Variant.StockQuantity,
+			&item.Variant.IsDefault,
+			&item.Variant.CreatedAt,
+			&item.Variant.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -110,14 +129,15 @@ func (r *CartRepository) FindItems(ctx context.Context, cartID int64) ([]model.C
 
 func (r *CartRepository) AddItem(ctx context.Context, cartID int64, request model.AddCartItemRequest) error {
 	result, err := r.db.ExecContext(ctx, `
-		INSERT INTO cart_items (cart_id, product_id, quantity)
-		SELECT $1, id, $2
-		FROM products
-		WHERE id = $3 AND is_active = TRUE
-		ON CONFLICT (cart_id, product_id) DO UPDATE
+		INSERT INTO cart_items (cart_id, product_id, product_variant_id, quantity)
+		SELECT $1, pv.product_id, pv.id, $2
+		FROM product_variants pv
+		JOIN products p ON p.id = pv.product_id
+		WHERE pv.id = $3 AND p.is_active = TRUE
+		ON CONFLICT (cart_id, product_variant_id) DO UPDATE
 		SET quantity = cart_items.quantity + EXCLUDED.quantity,
 			updated_at = NOW()
-	`, cartID, request.Quantity, request.ProductID)
+	`, cartID, request.Quantity, request.ProductVariantID)
 	if err != nil {
 		return err
 	}

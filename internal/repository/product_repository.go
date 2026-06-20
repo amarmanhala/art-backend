@@ -23,6 +23,15 @@ const productColumns = `
 	created_at, updated_at
 `
 
+const productImageColumns = `
+	id, product_id, image_url, thumbnail_url, original_url, blob_name, thumbnail_blob_name,
+	alt_text, sort_order, is_primary, created_at, updated_at
+`
+
+const productVariantColumns = `
+	id, product_id, size, price, stock_quantity, is_default, created_at, updated_at
+`
+
 func (r *ProductRepository) FindAll(ctx context.Context, filter model.ProductFilter, limit int, offset int) ([]model.Product, error) {
 	where, args := productFilterWhere(filter)
 	args = append(args, limit, offset)
@@ -75,7 +84,12 @@ func (r *ProductRepository) FindAll(ctx context.Context, filter model.ProductFil
 		return nil, err
 	}
 
-	return r.attachImages(ctx, products)
+	products, err = r.attachImages(ctx, products)
+	if err != nil {
+		return nil, err
+	}
+
+	return r.attachVariants(ctx, products)
 }
 
 func (r *ProductRepository) Count(ctx context.Context, filter model.ProductFilter) (int64, error) {
@@ -258,9 +272,14 @@ func (r *ProductRepository) FindByID(ctx context.Context, id int64) (model.Produ
 }
 
 func (r *ProductRepository) Create(ctx context.Context, request model.CreateProductRequest) (model.Product, error) {
-	var product model.Product
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.Product{}, err
+	}
+	defer tx.Rollback()
 
-	err := r.db.QueryRowContext(ctx, `
+	var product model.Product
+	err = tx.QueryRowContext(ctx, `
 		INSERT INTO products (
 			title, slug, description, price, currency, category, style, theme,
 			orientation, size, image_url, thumbnail_url, original_url, stock_quantity, is_active
@@ -303,8 +322,28 @@ func (r *ProductRepository) Create(ctx context.Context, request model.CreateProd
 		&product.CreatedAt,
 		&product.UpdatedAt,
 	)
+	if err != nil {
+		return model.Product{}, err
+	}
 
-	return product, err
+	variants := request.Variants
+	if len(variants) == 0 {
+		variants = []model.SaveProductVariantRequest{{
+			Size:          request.Size,
+			Price:         request.Price,
+			StockQuantity: request.StockQuantity,
+			IsDefault:     true,
+		}}
+	}
+	if _, err := insertProductVariantsTx(ctx, tx, product.ID, variants); err != nil {
+		return model.Product{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return model.Product{}, err
+	}
+
+	return r.attachImagesToProduct(ctx, product)
 }
 
 func (r *ProductRepository) UpdateByID(ctx context.Context, id int64, request model.UpdateProductRequest) (model.Product, error) {
@@ -441,6 +480,192 @@ func (r *ProductRepository) DeleteBySlug(ctx context.Context, slug string) (bool
 	return rowsAffected > 0, nil
 }
 
+func (r *ProductRepository) ReplaceVariants(ctx context.Context, productID int64, variants []model.SaveProductVariantRequest) (model.Product, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.Product{}, err
+	}
+	defer tx.Rollback()
+
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM products WHERE id = $1)`, productID).Scan(&exists); err != nil {
+		return model.Product{}, err
+	}
+	if !exists {
+		return model.Product{}, sql.ErrNoRows
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM product_variants WHERE product_id = $1`, productID); err != nil {
+		return model.Product{}, err
+	}
+
+	savedVariants, err := insertProductVariantsTx(ctx, tx, productID, variants)
+	if err != nil {
+		return model.Product{}, err
+	}
+
+	defaultVariant := savedVariants[0]
+	totalStock := 0
+	for _, variant := range savedVariants {
+		totalStock += variant.StockQuantity
+		if variant.IsDefault {
+			defaultVariant = variant
+		}
+	}
+
+	var product model.Product
+	err = tx.QueryRowContext(ctx, `
+		UPDATE products
+		SET size = $1,
+			price = $2,
+			stock_quantity = $3,
+			updated_at = NOW()
+		WHERE id = $4
+		RETURNING `+productColumns+`
+	`, defaultVariant.Size, defaultVariant.Price, totalStock, productID).Scan(
+		&product.ID,
+		&product.Title,
+		&product.Slug,
+		&product.Description,
+		&product.Price,
+		&product.Currency,
+		&product.Category,
+		&product.Style,
+		&product.Theme,
+		&product.Orientation,
+		&product.Size,
+		&product.ImageURL,
+		&product.ThumbnailURL,
+		&product.OriginalURL,
+		&product.StockQuantity,
+		&product.IsActive,
+		&product.CreatedAt,
+		&product.UpdatedAt,
+	)
+	if err != nil {
+		return model.Product{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return model.Product{}, err
+	}
+
+	return r.attachImagesToProduct(ctx, product)
+}
+
+func (r *ProductRepository) ReplaceImages(ctx context.Context, productID int64, images []model.ProductImage) (model.Product, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return model.Product{}, err
+	}
+	defer tx.Rollback()
+
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM products WHERE id = $1)`, productID).Scan(&exists); err != nil {
+		return model.Product{}, err
+	}
+	if !exists {
+		return model.Product{}, sql.ErrNoRows
+	}
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM product_images WHERE product_id = $1`, productID); err != nil {
+		return model.Product{}, err
+	}
+
+	savedImages := make([]model.ProductImage, 0, len(images))
+	for _, image := range images {
+		var saved model.ProductImage
+		err := tx.QueryRowContext(ctx, `
+			INSERT INTO product_images (
+				product_id, image_url, thumbnail_url, original_url, blob_name,
+				thumbnail_blob_name, alt_text, sort_order, is_primary
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			RETURNING `+productImageColumns+`
+		`,
+			productID,
+			image.ImageURL,
+			image.ThumbnailURL,
+			image.OriginalURL,
+			image.BlobName,
+			image.ThumbnailBlobName,
+			image.AltText,
+			image.SortOrder,
+			image.IsPrimary,
+		).Scan(
+			&saved.ID,
+			&saved.ProductID,
+			&saved.ImageURL,
+			&saved.ThumbnailURL,
+			&saved.OriginalURL,
+			&saved.BlobName,
+			&saved.ThumbnailBlobName,
+			&saved.AltText,
+			&saved.SortOrder,
+			&saved.IsPrimary,
+			&saved.CreatedAt,
+			&saved.UpdatedAt,
+		)
+		if err != nil {
+			return model.Product{}, err
+		}
+
+		savedImages = append(savedImages, saved)
+	}
+
+	imageURL := ""
+	thumbnailURL := ""
+	originalURL := ""
+	for _, image := range savedImages {
+		if image.IsPrimary {
+			imageURL = image.ImageURL
+			thumbnailURL = image.ThumbnailURL
+			originalURL = image.OriginalURL
+			break
+		}
+	}
+
+	var product model.Product
+	err = tx.QueryRowContext(ctx, `
+		UPDATE products
+		SET image_url = $1,
+			thumbnail_url = $2,
+			original_url = $3,
+			updated_at = NOW()
+		WHERE id = $4
+		RETURNING `+productColumns+`
+	`, imageURL, thumbnailURL, originalURL, productID).Scan(
+		&product.ID,
+		&product.Title,
+		&product.Slug,
+		&product.Description,
+		&product.Price,
+		&product.Currency,
+		&product.Category,
+		&product.Style,
+		&product.Theme,
+		&product.Orientation,
+		&product.Size,
+		&product.ImageURL,
+		&product.ThumbnailURL,
+		&product.OriginalURL,
+		&product.StockQuantity,
+		&product.IsActive,
+		&product.CreatedAt,
+		&product.UpdatedAt,
+	)
+	if err != nil {
+		return model.Product{}, err
+	}
+	product.Images = savedImages
+
+	if err := tx.Commit(); err != nil {
+		return model.Product{}, err
+	}
+
+	return product, nil
+}
+
 func productFilterWhere(filter model.ProductFilter) (string, []any) {
 	conditions := []string{"is_active = TRUE"}
 	args := make([]any, 0)
@@ -512,7 +737,12 @@ func (r *ProductRepository) scanProductsWithImages(ctx context.Context, rows *sq
 		return nil, err
 	}
 
-	return r.attachImages(ctx, products)
+	products, err = r.attachImages(ctx, products)
+	if err != nil {
+		return nil, err
+	}
+
+	return r.attachVariants(ctx, products)
 }
 
 func (r *ProductRepository) attachImagesToProduct(ctx context.Context, product model.Product) (model.Product, error) {
@@ -524,7 +754,7 @@ func (r *ProductRepository) attachImagesToProduct(ctx context.Context, product m
 		return product, nil
 	}
 
-	return products[0], nil
+	return r.attachVariantsToProduct(ctx, products[0])
 }
 
 func (r *ProductRepository) attachImages(ctx context.Context, products []model.Product) ([]model.Product, error) {
@@ -542,7 +772,7 @@ func (r *ProductRepository) attachImages(ctx context.Context, products []model.P
 	}
 
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT id, product_id, image_url, alt_text, sort_order, is_primary, created_at, updated_at
+		SELECT `+productImageColumns+`
 		FROM product_images
 		WHERE product_id IN (`+strings.Join(ids, ", ")+`)
 		ORDER BY product_id, sort_order, id
@@ -558,6 +788,10 @@ func (r *ProductRepository) attachImages(ctx context.Context, products []model.P
 			&image.ID,
 			&image.ProductID,
 			&image.ImageURL,
+			&image.ThumbnailURL,
+			&image.OriginalURL,
+			&image.BlobName,
+			&image.ThumbnailBlobName,
 			&image.AltText,
 			&image.SortOrder,
 			&image.IsPrimary,
@@ -573,4 +807,128 @@ func (r *ProductRepository) attachImages(ctx context.Context, products []model.P
 	}
 
 	return products, rows.Err()
+}
+
+func (r *ProductRepository) attachVariants(ctx context.Context, products []model.Product) ([]model.Product, error) {
+	if len(products) == 0 {
+		return products, nil
+	}
+
+	ids := make([]string, 0, len(products))
+	args := make([]any, 0, len(products))
+	productIndexByID := make(map[int64]int, len(products))
+	for index, product := range products {
+		args = append(args, product.ID)
+		ids = append(ids, fmt.Sprintf("$%d", len(args)))
+		productIndexByID[product.ID] = index
+	}
+
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT `+productVariantColumns+`
+		FROM product_variants
+		WHERE product_id IN (`+strings.Join(ids, ", ")+`)
+		ORDER BY product_id, is_default DESC, id
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var variant model.ProductVariant
+		if err := rows.Scan(
+			&variant.ID,
+			&variant.ProductID,
+			&variant.Size,
+			&variant.Price,
+			&variant.StockQuantity,
+			&variant.IsDefault,
+			&variant.CreatedAt,
+			&variant.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+
+		if index, ok := productIndexByID[variant.ProductID]; ok {
+			products[index].Variants = append(products[index].Variants, variant)
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for index := range products {
+		if len(products[index].Variants) == 0 {
+			continue
+		}
+
+		defaultVariant := products[index].Variants[0]
+		totalStock := 0
+		for _, variant := range products[index].Variants {
+			totalStock += variant.StockQuantity
+			if variant.IsDefault {
+				defaultVariant = variant
+			}
+		}
+
+		products[index].Size = defaultVariant.Size
+		products[index].Price = defaultVariant.Price
+		products[index].StockQuantity = totalStock
+	}
+
+	return products, nil
+}
+
+func (r *ProductRepository) attachVariantsToProduct(ctx context.Context, product model.Product) (model.Product, error) {
+	products, err := r.attachVariants(ctx, []model.Product{product})
+	if err != nil {
+		return model.Product{}, err
+	}
+	if len(products) == 0 {
+		return product, nil
+	}
+
+	return products[0], nil
+}
+
+func insertProductVariantsTx(ctx context.Context, tx *sql.Tx, productID int64, variants []model.SaveProductVariantRequest) ([]model.ProductVariant, error) {
+	if len(variants) == 0 {
+		return nil, sql.ErrNoRows
+	}
+
+	saved := make([]model.ProductVariant, 0, len(variants))
+	for index, variant := range variants {
+		if variant.Size == "" || variant.Price <= 0 {
+			return nil, sql.ErrNoRows
+		}
+
+		isDefault := variant.IsDefault
+		if index == 0 {
+			isDefault = true
+		}
+
+		var item model.ProductVariant
+		err := tx.QueryRowContext(ctx, `
+			INSERT INTO product_variants (product_id, size, price, stock_quantity, is_default)
+			VALUES ($1, $2, $3, $4, $5)
+			RETURNING `+productVariantColumns+`
+		`, productID, variant.Size, variant.Price, variant.StockQuantity, isDefault).Scan(
+			&item.ID,
+			&item.ProductID,
+			&item.Size,
+			&item.Price,
+			&item.StockQuantity,
+			&item.IsDefault,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		saved = append(saved, item)
+	}
+
+	return saved, nil
 }

@@ -12,11 +12,12 @@ import (
 )
 
 type ProductController struct {
-	service *service.ProductService
+	service      *service.ProductService
+	imageService *service.ProductImageService
 }
 
-func NewProductController(service *service.ProductService) *ProductController {
-	return &ProductController{service: service}
+func NewProductController(service *service.ProductService, imageService *service.ProductImageService) *ProductController {
+	return &ProductController{service: service, imageService: imageService}
 }
 
 func (c *ProductController) GetAll(w http.ResponseWriter, r *http.Request) {
@@ -214,7 +215,11 @@ func (c *ProductController) Create(w http.ResponseWriter, r *http.Request) {
 
 	product, err := c.service.Create(r.Context(), request)
 	if errors.Is(err, service.ErrInvalidProduct) {
-		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "validation failed", "title, slug, category, and price greater than 0 are required")
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "validation failed", "title, slug, category, and price greater than 0 are required; provide size or variants")
+		return
+	}
+	if errors.Is(err, service.ErrDuplicateProductSlug) {
+		response.Error(w, http.StatusConflict, "CONFLICT", "product slug already exists", "use a unique slug for this product")
 		return
 	}
 	if err != nil {
@@ -223,6 +228,36 @@ func (c *ProductController) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response.JSON(w, http.StatusCreated, "product created successfully", product)
+}
+
+func (c *ProductController) ReplaceVariants(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid product id", "id must be a positive number")
+		return
+	}
+
+	var request model.SaveProductVariantsRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body", err.Error())
+		return
+	}
+
+	product, err := c.service.ReplaceVariants(r.Context(), id, request)
+	if errors.Is(err, service.ErrProductNotFound) {
+		response.Error(w, http.StatusNotFound, "NOT_FOUND", "product not found", "")
+		return
+	}
+	if errors.Is(err, service.ErrInvalidProductVariants) {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "validation failed", "variants array is required and each variant needs size and price")
+		return
+	}
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "could not save product variants", err.Error())
+		return
+	}
+
+	response.JSON(w, http.StatusOK, "product variants saved successfully", product)
 }
 
 func (c *ProductController) UpdateByIdentifier(w http.ResponseWriter, r *http.Request) {
@@ -267,6 +302,10 @@ func (c *ProductController) updateByID(w http.ResponseWriter, r *http.Request, i
 		response.Error(w, http.StatusNotFound, "NOT_FOUND", "product not found", "")
 		return
 	}
+	if errors.Is(err, service.ErrDuplicateProductSlug) {
+		response.Error(w, http.StatusConflict, "CONFLICT", "product slug already exists", "use a unique slug for this product")
+		return
+	}
 	if err != nil {
 		response.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "could not update product", err.Error())
 		return
@@ -283,6 +322,10 @@ func (c *ProductController) updateBySlug(w http.ResponseWriter, r *http.Request,
 	}
 	if errors.Is(err, service.ErrProductNotFound) {
 		response.Error(w, http.StatusNotFound, "NOT_FOUND", "product not found", "")
+		return
+	}
+	if errors.Is(err, service.ErrDuplicateProductSlug) {
+		response.Error(w, http.StatusConflict, "CONFLICT", "product slug already exists", "use a unique slug for this product")
 		return
 	}
 	if err != nil {
@@ -315,6 +358,40 @@ func (c *ProductController) DeleteByID(w http.ResponseWriter, r *http.Request) {
 
 func (c *ProductController) DeleteBySlug(w http.ResponseWriter, r *http.Request) {
 	c.deleteBySlug(w, r, r.PathValue("slug"))
+}
+
+func (c *ProductController) ReplaceImages(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid product id", "id must be a positive number")
+		return
+	}
+
+	var request model.SaveProductImagesRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body", err.Error())
+		return
+	}
+
+	product, err := c.imageService.ReplaceImages(r.Context(), id, request)
+	if errors.Is(err, service.ErrInvalidProductImages) {
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "validation failed", "main_image is required and total images must be at most 10 product original blob names")
+		return
+	}
+	if errors.Is(err, service.ErrProductNotFound) {
+		response.Error(w, http.StatusNotFound, "NOT_FOUND", "product not found", "")
+		return
+	}
+	if errors.Is(err, service.ErrProductImageStorageNotConfigured) {
+		response.Error(w, http.StatusInternalServerError, "AZURE_NOT_CONFIGURED", "azure product image storage is not configured", "")
+		return
+	}
+	if err != nil {
+		response.Error(w, http.StatusInternalServerError, "INTERNAL_ERROR", "could not save product images", err.Error())
+		return
+	}
+
+	response.JSON(w, http.StatusOK, "product images saved successfully", product)
 }
 
 func (c *ProductController) deleteByID(w http.ResponseWriter, r *http.Request, id int64) {

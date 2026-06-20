@@ -87,3 +87,20 @@ func (s *AuthService) Logout(token string) {
 func (s *AuthService) GetUserIDByToken(token string) (int64, bool) {
 	return s.tokens.GetUserID(token)
 }
+
+func (s *AuthService) GetUserByToken(ctx context.Context, token string) (model.User, bool, error) {
+	userID, ok := s.tokens.GetUserID(token)
+	if !ok {
+		return model.User{}, false, nil
+	}
+
+	user, err := s.users.FindByID(ctx, userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.User{}, false, nil
+	}
+	if err != nil {
+		return model.User{}, false, err
+	}
+
+	return user, true, nil
+}

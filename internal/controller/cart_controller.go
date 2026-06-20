@@ -38,7 +38,7 @@ func (c *CartController) AddItem(w http.ResponseWriter, r *http.Request) {
 
 	cart, err := c.service.AddItem(r.Context(), CurrentUserID(r), request)
 	if errors.Is(err, service.ErrInvalidCartItem) {
-		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "validation failed", "product_id and quantity greater than 0 are required")
+		response.Error(w, http.StatusBadRequest, "BAD_REQUEST", "validation failed", "product_variant_id and quantity greater than 0 are required")
 		return
 	}
 	if err != nil {

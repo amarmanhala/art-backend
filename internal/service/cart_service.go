@@ -32,7 +32,7 @@ func (s *CartService) GetCart(ctx context.Context, userID int64) (model.CartResp
 }
 
 func (s *CartService) AddItem(ctx context.Context, userID int64, request model.AddCartItemRequest) (model.CartResponse, error) {
-	if request.ProductID <= 0 || request.Quantity <= 0 {
+	if request.ProductVariantID <= 0 || request.Quantity <= 0 {
 		return model.CartResponse{}, ErrInvalidCartItem
 	}
 

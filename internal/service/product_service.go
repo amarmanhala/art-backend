@@ -8,13 +8,17 @@ import (
 
 	"art-backend/internal/model"
 	"art-backend/internal/repository"
+
+	"github.com/lib/pq"
 )
 
 var (
-	ErrProductNotFound = errors.New("product not found")
-	ErrInvalidProduct  = errors.New("invalid product")
-	ErrInvalidPage     = errors.New("invalid page")
-	ErrInvalidSearch   = errors.New("invalid search")
+	ErrProductNotFound        = errors.New("product not found")
+	ErrInvalidProduct         = errors.New("invalid product")
+	ErrInvalidProductVariants = errors.New("invalid product variants")
+	ErrDuplicateProductSlug   = errors.New("duplicate product slug")
+	ErrInvalidPage            = errors.New("invalid page")
+	ErrInvalidSearch          = errors.New("invalid search")
 )
 
 type ProductService struct {
@@ -107,18 +111,10 @@ func (s *ProductService) GetByID(ctx context.Context, id int64) (model.Product, 
 }
 
 func (s *ProductService) Create(ctx context.Context, request model.CreateProductRequest) (model.Product, error) {
-	request.Title = strings.TrimSpace(request.Title)
-	request.Slug = strings.TrimSpace(request.Slug)
-	request.Description = strings.TrimSpace(request.Description)
-	request.Currency = strings.TrimSpace(request.Currency)
-	request.Category = strings.TrimSpace(request.Category)
-	request.Style = strings.TrimSpace(request.Style)
-	request.Theme = strings.TrimSpace(request.Theme)
-	request.Orientation = strings.TrimSpace(request.Orientation)
-	request.Size = strings.TrimSpace(request.Size)
-	request.ImageURL = strings.TrimSpace(request.ImageURL)
-	request.ThumbnailURL = strings.TrimSpace(request.ThumbnailURL)
-	request.OriginalURL = strings.TrimSpace(request.OriginalURL)
+	request = normalizeCreateProductRequest(request)
+	if !prepareCreateProductVariants(&request) {
+		return model.Product{}, ErrInvalidProduct
+	}
 
 	if request.Currency == "" {
 		request.Currency = "USD"
@@ -132,7 +128,12 @@ func (s *ProductService) Create(ctx context.Context, request model.CreateProduct
 		return model.Product{}, ErrInvalidProduct
 	}
 
-	return s.repository.Create(ctx, request)
+	product, err := s.repository.Create(ctx, request)
+	if isUniqueProductSlugError(err) {
+		return model.Product{}, ErrDuplicateProductSlug
+	}
+
+	return product, err
 }
 
 func (s *ProductService) UpdateByID(ctx context.Context, id int64, request model.UpdateProductRequest) (model.Product, error) {
@@ -146,6 +147,9 @@ func (s *ProductService) UpdateByID(ctx context.Context, id int64, request model
 	product, err := s.repository.UpdateByID(ctx, id, request)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Product{}, ErrProductNotFound
+	}
+	if isUniqueProductSlugError(err) {
+		return model.Product{}, ErrDuplicateProductSlug
 	}
 
 	return product, err
@@ -164,8 +168,16 @@ func (s *ProductService) UpdateBySlug(ctx context.Context, slug string, request 
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Product{}, ErrProductNotFound
 	}
+	if isUniqueProductSlugError(err) {
+		return model.Product{}, ErrDuplicateProductSlug
+	}
 
 	return product, err
+}
+
+func isUniqueProductSlugError(err error) bool {
+	var pqErr *pq.Error
+	return errors.As(err, &pqErr) && pqErr.Code == "23505" && pqErr.Constraint == "products_slug_key"
 }
 
 func sanitizeUpdateProductRequest(request *model.UpdateProductRequest) bool {
@@ -197,6 +209,10 @@ func sanitizeUpdateProductRequest(request *model.UpdateProductRequest) bool {
 		return false
 	}
 
+	if len(request.Variants) > 0 {
+		return false
+	}
+
 	if request.Price != nil {
 		hasField = true
 		if *request.Price <= 0 {
@@ -224,6 +240,124 @@ func sanitizeUpdateProductRequest(request *model.UpdateProductRequest) bool {
 	}
 
 	return hasField
+}
+
+func (s *ProductService) ReplaceVariants(ctx context.Context, id int64, request model.SaveProductVariantsRequest) (model.Product, error) {
+	if id <= 0 {
+		return model.Product{}, ErrProductNotFound
+	}
+
+	variants := normalizeProductVariants(request.Variants)
+	if len(variants) == 0 {
+		return model.Product{}, ErrInvalidProductVariants
+	}
+	if !ensureDefaultVariant(&variants) {
+		return model.Product{}, ErrInvalidProductVariants
+	}
+
+	product, err := s.repository.ReplaceVariants(ctx, id, variants)
+	if errors.Is(err, sql.ErrNoRows) {
+		return model.Product{}, ErrProductNotFound
+	}
+
+	return product, err
+}
+
+func normalizeCreateProductRequest(request model.CreateProductRequest) model.CreateProductRequest {
+	request.Title = strings.TrimSpace(request.Title)
+	request.Slug = strings.TrimSpace(request.Slug)
+	request.Description = strings.TrimSpace(request.Description)
+	request.Currency = strings.TrimSpace(request.Currency)
+	request.Category = strings.TrimSpace(request.Category)
+	request.Style = strings.TrimSpace(request.Style)
+	request.Theme = strings.TrimSpace(request.Theme)
+	request.Orientation = strings.TrimSpace(request.Orientation)
+	request.Size = strings.TrimSpace(request.Size)
+	request.ImageURL = strings.TrimSpace(request.ImageURL)
+	request.ThumbnailURL = strings.TrimSpace(request.ThumbnailURL)
+	request.OriginalURL = strings.TrimSpace(request.OriginalURL)
+	request.Variants = normalizeProductVariants(request.Variants)
+	return request
+}
+
+func normalizeProductVariants(variants []model.SaveProductVariantRequest) []model.SaveProductVariantRequest {
+	normalized := make([]model.SaveProductVariantRequest, 0, len(variants))
+	for _, variant := range variants {
+		variant.Size = strings.TrimSpace(variant.Size)
+		if variant.Size == "" {
+			continue
+		}
+		normalized = append(normalized, variant)
+	}
+
+	return normalized
+}
+
+func ensureDefaultVariant(variants *[]model.SaveProductVariantRequest) bool {
+	if len(*variants) == 0 {
+		return false
+	}
+
+	defaultIndex := -1
+	for i, variant := range *variants {
+		if variant.IsDefault {
+			defaultIndex = i
+			break
+		}
+	}
+	if defaultIndex < 0 {
+		defaultIndex = 0
+		(*variants)[0].IsDefault = true
+	}
+
+	if (*variants)[defaultIndex].Size == "" || (*variants)[defaultIndex].Price <= 0 {
+		return false
+	}
+
+	for i := range *variants {
+		if (*variants)[i].Price <= 0 {
+			return false
+		}
+	}
+
+	return true
+}
+
+func prepareCreateProductVariants(request *model.CreateProductRequest) bool {
+	request.Variants = normalizeProductVariants(request.Variants)
+
+	if len(request.Variants) == 0 {
+		if strings.TrimSpace(request.Size) == "" || request.Price <= 0 {
+			return false
+		}
+
+		request.Variants = []model.SaveProductVariantRequest{{
+			Size:          strings.TrimSpace(request.Size),
+			Price:         request.Price,
+			StockQuantity: request.StockQuantity,
+			IsDefault:     true,
+		}}
+		request.StockQuantity = request.StockQuantity
+		return true
+	}
+
+	if !ensureDefaultVariant(&request.Variants) {
+		return false
+	}
+
+	defaultVariant := request.Variants[0]
+	totalStock := 0
+	for _, variant := range request.Variants {
+		totalStock += variant.StockQuantity
+		if variant.IsDefault {
+			defaultVariant = variant
+		}
+	}
+
+	request.Size = defaultVariant.Size
+	request.Price = defaultVariant.Price
+	request.StockQuantity = totalStock
+	return true
 }
 
 func (s *ProductService) DeleteByID(ctx context.Context, id int64) error {
